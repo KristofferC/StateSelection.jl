@@ -231,6 +231,18 @@ end
 
 const _SUPPORTS_NEED_REMAINDER = isdefined(Symbolics, :SUPPORTS_LINEAR_EXPANDER_NEED_REMAINDER)
 
+# The set of all `fullvars` plus the base of any scalarized (`getindex`) variable.
+function _build_fullvars_set(fullvars)
+    fullvars_set = Set{SymbolicT}(fullvars)
+    for v in fullvars
+        @match v begin
+            BSImpl.Term(; f, args) && if f === getindex end => push!(fullvars_set, args[1])
+            _ => nothing
+        end
+    end
+    return fullvars_set
+end
+
 function StateSelection.find_eq_solvables!(state::TearingState, ieq, to_rm = Int[], coeffs = nothing;
         # this used to be `false`, but I can't find a place where this is called
         # that doesn't want to remove false incidences, and it fixes several bugs.
@@ -250,15 +262,8 @@ function StateSelection.find_eq_solvables!(state::TearingState, ieq, to_rm = Int
     coeffs === nothing || empty!(coeffs)
     empty!(to_rm)
 
-    if fullvars_set === nothing
-        fullvars_set = Set{SymbolicT}(fullvars)
-        for v in fullvars
-            @match v begin
-                BSImpl.Term(; f, args) && if f === getindex end => push!(fullvars_set, args[1])
-                _ => nothing
-            end
-        end
-    end
+    # `fullvars_set` is only consulted in the non-constant-coefficient branch below, which
+    # most equations never hit. Build it lazily on first use instead of eagerly every call.
     for j in 𝑠neighbors(graph, ieq)
         var = fullvars[j]
         MTKBase.isirreducible(var) && (all_int_vars = false; continue)
@@ -270,6 +275,7 @@ function StateSelection.find_eq_solvables!(state::TearingState, ieq, to_rm = Int
         islinear || (all_int_vars = false; continue)
         if !SU.isconst(a)
             all_int_vars = false
+            fullvars_set === nothing && (fullvars_set = _build_fullvars_set(fullvars))
             if !_check_allow_symbolic_parameter(state, a, allow_symbolic, allow_parameter; fullvars_set)
                 continue
             end
